@@ -1,5 +1,5 @@
 {
-  "name": "@jorts/homebridge-vizio-soundbar",
+  "name": "@solowalker27/homebridge-vizio-soundbar",
   "version": "0.1.0",
   "displayName": "Homebridge Vizio Soundbar",
   "description": "Local HomeKit control for Vizio SmartCast soundbars",
@@ -50,5 +50,9 @@
     "homebridge": "^2.4.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.1"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

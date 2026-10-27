@@ -43,7 +43,7 @@ test('ESM initializer registers with the exact scoped package name', async t => 
   register(api);
   const [name, ctor, plugin] = await event;
   assert.equal(name, 'HomebridgeVizioSoundbar');
-  assert.equal(plugin, '@jorts/homebridge-vizio-soundbar');
+  assert.equal(plugin, '@solowalker27/homebridge-vizio-soundbar');
   assert.equal(ctor, HomebridgeVizioSoundbar);
 });
 
@@ -64,7 +64,7 @@ test('publishes a primary receiver with all linked inputs only after discovery f
   const C = api.hap.Characteristic;
   const S = api.hap.Service;
   const tv = platform.accessory.getService(S.Television);
-  assert.equal(platform.accessory._associatedPlugin, '@jorts/homebridge-vizio-soundbar');
+  assert.equal(platform.accessory._associatedPlugin, '@solowalker27/homebridge-vizio-soundbar');
   assert.equal(platform.accessory.category, api.hap.Categories.AUDIO_RECEIVER);
   assert.equal(platform.accessory.UUID, api.hap.uuid.generate('homebridge:vizio-soundbar:accessory:Living Room'));
   assert.equal(tv.isPrimaryService, true);

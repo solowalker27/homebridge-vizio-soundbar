@@ -7,7 +7,7 @@ import { apiFor } from './helpers.js';
 
 test('Homebridge 2 loads the actual ESM entrypoint and registers the packaged plugin', async () => {
   const metadata = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  const plugin = new Plugin('homebridge-vizio-soundbar', fileURLToPath(new URL('..', import.meta.url)), metadata, '@jorts');
+  const plugin = new Plugin('homebridge-vizio-soundbar', fileURLToPath(new URL('..', import.meta.url)), metadata, '@solowalker27');
   await plugin.load();
   const { api } = apiFor('unused');
   let registered;

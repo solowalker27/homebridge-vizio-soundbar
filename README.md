@@ -13,7 +13,7 @@ This release targets the HomeKit services used by current Apple Home/iOS. It doe
 
 ## Install and configure
 
-Install `@jorts/homebridge-vizio-soundbar` through the Homebridge UI. For a local checkout:
+Install `@solowalker27/homebridge-vizio-soundbar` through the Homebridge UI. For a local checkout:
 
 ```sh
 npm ci
@@ -70,7 +70,7 @@ The accessory category changes from generic Speaker to Audio Receiver, with Tele
 
 Input identifiers now use stable, nonzero values derived from each protocol input name instead of array positions. **Reselect inputs in existing scenes and automations after upgrading.** Names/visibility set in the old version were not persisted and may need to be set once more. New settings are saved under `vizio-soundbar/<accessory UUID>.json` in Homebridge's storage directory; include this directory in backups.
 
-The plugin identifier now matches the scoped npm package name, `@jorts/homebridge-vizio-soundbar`. The package name itself has not changed.
+This maintained fork is published as `@solowalker27/homebridge-vizio-soundbar`, replacing `@jorts/homebridge-vizio-soundbar`. Uninstall the old plugin before installing the fork so both do not register the same platform. Keep your existing configuration entry; its platform alias and accessory UUID seed are unchanged.
 
 ## Development and verification
 

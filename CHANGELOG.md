@@ -5,7 +5,7 @@
 ### Compatibility
 
 - Target Homebridge 2.4+ and Node 22.13/24/26; publish native ESM with a default initializer.
-- Register and publish using the actual scoped npm package name.
+- Publish the maintained fork as `@solowalker27/homebridge-vizio-soundbar` and use that exact identifier for registration. Uninstall `@jorts/homebridge-vizio-soundbar` before installing this fork.
 - Use current Homebridge HAP services and async `onGet`/`onSet` handlers.
 - Publish an Audio Receiver with a primary Television service and linked speaker/inputs.
 
