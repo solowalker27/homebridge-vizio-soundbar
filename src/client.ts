@@ -1,6 +1,8 @@
 import { Agent, request } from 'node:https';
 import type { ClientRequest } from 'node:http';
 import type { SoundbarConfig } from './config.js';
+import { silentDiagnostics } from './diagnostics.js';
+import type { Diagnostics } from './diagnostics.js';
 
 const AUDIO = '/menu_native/dynamic/audio_settings/audio';
 const INPUT = '/menu_native/dynamic/audio_settings/input';
@@ -19,9 +21,16 @@ export class SmartCastClient {
   private closed = false;
   private writes: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly config: SoundbarConfig) {}
+  constructor(private readonly config: SoundbarConfig, private readonly diagnostics: Diagnostics = silentDiagnostics) {
+    this.diagnostics.debug('SmartCast client initialized', {
+      endpoint: config.endpoint.origin, requestTimeout: config.requestTimeout,
+      hasAuthToken: Boolean(config.authToken),
+      automaticAuthRefresh: false,
+    });
+  }
 
   close(): void {
+    this.diagnostics.debug('SmartCast client shutdown', { pendingRequests: this.pending.size });
     this.closed = true;
     for (const req of this.pending) {
       req.destroy(new Error('Soundbar client shut down'));
@@ -29,7 +38,7 @@ export class SmartCastClient {
     this.agent.destroy();
   }
 
-  private request(method: 'GET' | 'PUT', path: string, body?: JsonObject, deadline?: number): Promise<JsonObject> {
+  private async request(method: 'GET' | 'PUT', path: string, body?: JsonObject, deadline?: number): Promise<JsonObject> {
     if (this.closed) {
       return Promise.reject(new Error('Soundbar client is closed'));
     }
@@ -37,59 +46,122 @@ export class SmartCastClient {
     if (timeout <= 0) {
       return Promise.reject(new Error('Soundbar command timed out while waiting for earlier commands'));
     }
-    return new Promise((resolve, reject) => {
-      const data = body === undefined ? undefined : JSON.stringify(body);
-      const headers: Record<string, string | number> = { Accept: 'application/json' };
-      if (this.config.authToken) {
-        headers.AUTH = this.config.authToken;
-      }
-      if (data !== undefined) {
-        headers['Content-Type'] = 'application/json';
-        headers['Content-Length'] = Buffer.byteLength(data);
-      }
-      const req = request(new URL(path, this.config.endpoint), { method, headers, agent: this.agent }, res => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        res.on('data', (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > MAX_RESPONSE_BYTES) {
-            req.destroy(new Error('Soundbar response exceeded 1 MiB'));
-          } else {
-            chunks.push(chunk);
-          }
-        });
-        res.on('error', reject);
-        res.on('aborted', () => reject(new Error('Soundbar response was interrupted')));
-        res.on('end', () => {
-          if (res.statusCode === undefined || res.statusCode < 200 || res.statusCode >= 300) {
-            reject(new Error(`Soundbar HTTP error ${res.statusCode ?? 'unknown'}`));
-            return;
-          }
-          let result: unknown;
-          try {
-            result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          } catch {
-            // JSON.parse errors can quote the response, which may contain authentication data.
-            reject(new Error('Soundbar returned invalid JSON'));
-            return;
-          }
-          if (!object(result) || !object(result.STATUS) || result.STATUS.RESULT !== 'SUCCESS') {
-            reject(new Error('Soundbar rejected the request or returned an invalid status'));
-            return;
-          }
-          resolve(result);
-        });
-      });
-      // A wall-clock deadline also covers DNS/TLS and peers that never finish their response.
-      const timer = setTimeout(() => req.destroy(new Error(`Soundbar request timed out after ${timeout} ms`)), timeout);
-      this.pending.add(req);
-      req.on('error', reject);
-      req.on('close', () => {
-        clearTimeout(timer);
-        this.pending.delete(req);
-      });
-      req.end(data);
+    const requestId = this.diagnostics.nextId();
+    const started = performance.now();
+    const command = method === 'PUT' ? this.commandName(path, body) : undefined;
+    const details = { requestId, method, path, command, endpoint: this.config.endpoint.origin };
+    if (command) {
+      this.diagnostics.audit('Sending soundbar command', { ...details, body });
+    }
+    this.diagnostics.debug('SmartCast HTTP request', {
+      ...details, timeout, hasAuthToken: Boolean(this.config.authToken), body,
     });
+    try {
+      const result = await new Promise<JsonObject>((resolve, reject) => {
+        const data = body === undefined ? undefined : JSON.stringify(body);
+        const headers: Record<string, string | number> = { Accept: 'application/json' };
+        if (this.config.authToken) {
+          headers.AUTH = this.config.authToken;
+        }
+        if (data !== undefined) {
+          headers['Content-Type'] = 'application/json';
+          headers['Content-Length'] = Buffer.byteLength(data);
+        }
+        const req = request(new URL(path, this.config.endpoint), { method, headers, agent: this.agent }, res => {
+          const chunks: Buffer[] = [];
+          let size = 0;
+          res.on('data', (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > MAX_RESPONSE_BYTES) {
+              req.destroy(new Error('Soundbar response exceeded 1 MiB'));
+            } else {
+              chunks.push(chunk);
+            }
+          });
+          res.on('error', reject);
+          res.on('aborted', () => reject(new Error('Soundbar response was interrupted')));
+          res.on('end', () => {
+            let result: unknown;
+            let validJson = true;
+            try {
+              result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            } catch {
+              validJson = false;
+            }
+            this.diagnostics.debug('SmartCast HTTP response', {
+              ...details, statusCode: res.statusCode, durationMs: Math.round(performance.now() - started),
+              bytes: size, body: validJson ? result : '[non-JSON body omitted]',
+            });
+            if (res.statusCode === 401 || res.statusCode === 403) {
+              this.diagnostics.debug('SmartCast authentication rejected; automatic token refresh is not supported', {
+                requestId, statusCode: res.statusCode,
+              });
+            }
+            if (res.statusCode === undefined || res.statusCode < 200 || res.statusCode >= 300) {
+              reject(new Error(`Soundbar HTTP error ${res.statusCode ?? 'unknown'}`));
+              return;
+            }
+            if (!validJson) {
+              // Never log arbitrary non-JSON responses or JSON.parse errors, which can contain secrets.
+              reject(new Error('Soundbar returned invalid JSON'));
+              return;
+            }
+            if (!object(result) || !object(result.STATUS) || result.STATUS.RESULT !== 'SUCCESS') {
+              if (object(result) && object(result.STATUS) && typeof result.STATUS.RESULT === 'string'
+                && /AUTH|TOKEN|PAIR/i.test(result.STATUS.RESULT)) {
+                this.diagnostics.debug('SmartCast authentication/pairing status rejected; automatic token refresh is not supported', {
+                  requestId, status: result.STATUS,
+                });
+              }
+              reject(new Error('Soundbar rejected the request or returned an invalid status'));
+              return;
+            }
+            resolve(result);
+          });
+        });
+        // A wall-clock deadline also covers DNS/TLS and peers that never finish their response.
+        const timer = setTimeout(() => req.destroy(new Error(`Soundbar request timed out after ${timeout} ms`)), timeout);
+        this.pending.add(req);
+        req.on('error', reject);
+        req.on('close', () => {
+          clearTimeout(timer);
+          this.pending.delete(req);
+        });
+        req.end(data);
+      });
+      if (command) {
+        this.diagnostics.audit('Soundbar command acknowledged', {
+          ...details, durationMs: Math.round(performance.now() - started),
+        });
+      }
+      return result;
+    } catch (error) {
+      const failure = { ...details, durationMs: Math.round(performance.now() - started), error };
+      this.diagnostics.debug('SmartCast HTTP request failed', failure);
+      if (command) {
+        this.diagnostics.audit('Soundbar command failed', failure);
+      }
+      throw error;
+    }
+  }
+
+  private commandName(path: string, body?: JsonObject): string {
+    if (path === `${AUDIO}/volume`) {
+      return 'volume.set';
+    }
+    if (path === `${INPUT}/current_input`) {
+      return 'input.set';
+    }
+    const keys = body?.KEYLIST;
+    const key: unknown = Array.isArray(keys) ? keys[0] : undefined;
+    if (object(key)) {
+      const names: Record<string, string> = {
+        '11:0': 'power.off', '11:1': 'power.on', '5:0': 'volume.down', '5:1': 'volume.up',
+        '5:2': 'mute.off', '5:3': 'mute.on', '2:0': 'remote.fastForward', '2:1': 'remote.rewind',
+      };
+      return names[`${key.CODESET}:${key.CODE}`] ?? `key.${key.CODESET}.${key.CODE}`;
+    }
+    return 'unknown';
   }
 
   private async item(path: string, deadline?: number): Promise<JsonObject> {
@@ -163,12 +235,16 @@ export class SmartCastClient {
 
   // Serialize writes so hash-based read/modify/write operations cannot race each other.
   // Expire queued commands as well as network requests to stay within HomeKit's response window.
-  private write(operation: (deadline: number) => Promise<unknown>): Promise<void> {
+  private write(command: string, operation: (deadline: number) => Promise<unknown>): Promise<void> {
+    const queued = performance.now();
+    this.diagnostics.debug('SmartCast command queued', { command });
     const deadline = Date.now() + this.config.requestTimeout * 2;
     const result = this.writes.then(async () => {
       if (this.closed || Date.now() >= deadline) {
+        this.diagnostics.audit('Soundbar command not sent: expired in queue or client shut down', { command });
         throw new Error('Soundbar command expired or client shut down');
       }
+      this.diagnostics.debug('SmartCast command dequeued', { command, waitMs: Math.round(performance.now() - queued) });
       await operation(deadline);
     });
     this.writes = result.catch(() => undefined);
@@ -184,18 +260,18 @@ export class SmartCastClient {
   }
 
   setInput(name: string): Promise<void> {
-    return this.write(deadline => this.modify(`${INPUT}/current_input`, name, deadline));
+    return this.write('input.set', deadline => this.modify(`${INPUT}/current_input`, name, deadline));
   }
 
   setVolume(volume: number): Promise<void> {
     if (!Number.isFinite(volume) || volume < 0 || volume > 100) {
       return Promise.reject(new Error('Volume must be between 0 and 100'));
     }
-    return this.write(deadline => this.modify(`${AUDIO}/volume`, Math.round(volume), deadline));
+    return this.write('volume.set', deadline => this.modify(`${AUDIO}/volume`, Math.round(volume), deadline));
   }
 
   key(codeset: number, code: number): Promise<void> {
-    return this.write(deadline => this.request('PUT', '/key_command/', {
+    return this.write(`key.${codeset}.${code}`, deadline => this.request('PUT', '/key_command/', {
       KEYLIST: [{ CODESET: codeset, CODE: code, ACTION: 'KEYPRESS' }],
     }, deadline));
   }

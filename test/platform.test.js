@@ -324,3 +324,29 @@ test('invalid input names report a value error instead of a communication failur
   await assert.rejects(inputs[0].getCharacteristic(C.ConfiguredName).handleSetRequest('   '),
     error => error === context.api.hap.HAPStatus.INVALID_VALUE_IN_REQUEST);
 });
+
+test('normal command logs identify HomeKit writes and the controller address', async t => {
+  const context = await setup(t);
+  const { C, tv } = await launch(context);
+  await tv.getCharacteristic(C.Active).handleSetRequest(1, { remoteAddress: '10.0.0.50' });
+  await tv.getCharacteristic(C.RemoteKey).handleSetRequest(C.RemoteKey.REWIND, { remoteAddress: '10.0.0.50' });
+  const logs = context.logs.map(entry => entry.join(' ')).join('\n');
+  assert.match(logs, /Control write received/);
+  assert.match(logs, /"source":"HomeKit SET"/);
+  assert.match(logs, /"client":"10.0.0.50"/);
+  assert.match(logs, /Television.Active/);
+  assert.match(logs, /power.on/);
+  assert.match(logs, /Television.RemoteKey/);
+  assert.match(logs, /remote.rewind/);
+  assert.ok(!logs.includes('[Debug]'));
+});
+
+test('the per-plugin debug option logs polling and reads without global Homebridge debug mode', async t => {
+  const context = await setup(t, undefined, { debug: true });
+  const { C, speaker } = await launch(context);
+  await speaker.getCharacteristic(C.Volume).handleGetRequest();
+  const logs = context.logs.map(entry => entry.join(' ')).join('\n');
+  assert.match(logs, /\[Debug\].*Poll started/);
+  assert.match(logs, /\[Debug\].*SmartCast HTTP response/);
+  assert.match(logs, /\[Debug\].*Control read received/);
+});

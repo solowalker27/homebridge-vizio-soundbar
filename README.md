@@ -44,6 +44,7 @@ Add one platform entry to your Homebridge configuration:
 | `authToken` | Unset | Existing SmartCast authentication token, if your model requires one. Token acquisition/pairing with Vizio is outside this plugin. |
 | `pollInterval` | `30` | Seconds to wait after each completed background refresh: 10–3600, or 0 to disable. Reads requested by HomeKit still query the device directly; overlapping reads of the same property share one request. |
 | `requestTimeout` | `3000` | Per-request timeout in milliseconds, from 500 to 4000. Hash-based read/write commands have a total deadline of twice this value, including queue time. |
+| `debug` | `false` | Verbose SmartCast diagnostics, independent of Homebridge global debug mode. Enable **Verbose Debug Logging** in the plugin settings and restart its child bridge. |
 
 After restarting Homebridge, wait for the log message confirming the soundbar was published. In **Apple Home → Add Accessory → More Options**, select the soundbar and use your Homebridge PIN. External receivers are paired separately from the main Homebridge bridge.
 
@@ -58,7 +59,19 @@ The plugin discovers the available inputs before publishing. If the soundbar is 
 
 Apple Home decides which controls it displays for receivers. Not every client exposes an absolute-volume slider; HomeKit clients that support TelevisionSpeaker volume can use the advertised volume characteristic.
 
-The HTTPS client accepts the soundbar's self-signed certificate only within its own connection agent. It does not change Node's global TLS settings. Authentication headers are sent for all requests when configured, and response bodies/tokens are not logged. Use the plugin on a trusted local network.
+The HTTPS client accepts the soundbar's self-signed certificate only within its own connection agent. It does not change Node's global TLS settings. Authentication headers are sent for all requests when configured. Diagnostic logs redact authentication fields and configured tokens; response bodies are included only in verbose debug mode. Use the plugin on a trusted local network.
+
+## Command logging and troubleshooting unexpected power/remote activity
+
+Commands and changes to the reported power/input state are logged even with debug disabled. `[Command]` entries describe control writes and outgoing commands; `[State]` entries describe the plugin state updated from a device read or command acknowledgement. The log records each accepted HomeKit/internal control write, each outgoing SmartCast PUT request, and its acknowledgement or failure. Entries include the command name (for example, `power.on`, `input.set`, or `remote.rewind`), key codes or setting values, a request ID, and elapsed time. HomeKit writes also record the originating connection address when available and an operation ID that follows the command through the queue.
+
+The connection address may be a Home hub relaying an automation. It does not identify the original person, app, scene, or automation. Internal writes without a HAP connection are labeled `Homebridge/internal SET`.
+
+For more detail, enable **Verbose Debug Logging** under this plugin's settings in Homebridge UI, save, and restart the soundbar child bridge. This does not require Homebridge's global debug switch. Verbose entries have a `[Debug]` prefix and include discovery, polling, reads, shared/in-flight requests, state changes, queues, sanitized HTTP request/response bodies, response status, timing, authentication failures, and shutdown. Authentication tokens and credential fields are redacted; non-JSON responses are omitted and very large log entries are truncated at 16 KiB. Turn verbose logging off when the investigation is complete to reduce log volume.
+
+This plugin uses its own SmartCast client with an optional static authentication token. It does not initiate Vizio pairing or refresh tokens. Debug startup logs state whether a token is configured and that automatic refresh is unavailable; authentication failures are logged without retrying commands.
+
+If another unexpected event occurs, note its local timestamp and download the Homebridge log before rotation. Look for `Control write received`, `Sending soundbar command`, and the matching request/operation IDs around that time. `[Debug]` polling entries distinguish status observations from commands. Status GETs do not call the plugin's power/remote command paths; device firmware side effects and HDMI-CEC behavior still require device-side investigation.
 
 ## Upgrading from 0.0.3
 

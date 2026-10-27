@@ -29,3 +29,11 @@ test('rejects missing hosts, URLs, credentials, paths, and invalid tuning option
   assert.throws(() => config({ authToken: 'x\r\ny' }));
   assert.equal(config({ pollInterval: 0 }).pollInterval, 0);
 });
+
+test('debug logging defaults off and accepts only an actual boolean', () => {
+  assert.equal(config().debug, false);
+  assert.equal(config({ debug: true }).debug, true);
+  for (const debug of ['false', 'true', 1, {}]) {
+    assert.throws(() => config({ debug }), /debug must be a boolean/);
+  }
+});

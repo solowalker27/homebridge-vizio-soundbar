@@ -6,6 +6,7 @@ export interface SoundbarConfig {
   authToken?: string;
   requestTimeout: number;
   pollInterval: number;
+  debug: boolean;
 }
 
 export function parseConfig(config: PlatformConfig): SoundbarConfig {
@@ -37,5 +38,9 @@ export function parseConfig(config: PlatformConfig): SoundbarConfig {
   if (!Number.isInteger(pollInterval) || (pollInterval !== 0 && (pollInterval < 10 || pollInterval > 3600))) {
     throw new Error('pollInterval must be 0 (disabled) or an integer from 10 to 3600 seconds');
   }
-  return { name: name.trim(), endpoint, authToken: config.authToken, requestTimeout, pollInterval };
+  const debug = config.debug ?? false;
+  if (typeof debug !== 'boolean') {
+    throw new Error('debug must be a boolean');
+  }
+  return { name: name.trim(), endpoint, authToken: config.authToken, requestTimeout, pollInterval, debug };
 }

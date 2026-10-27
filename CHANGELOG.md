@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2
+
+- Always log outgoing soundbar commands and acknowledgements/failures, with command names, key codes/values, request IDs, source context, and timing. Log reported power/input state changes separately from commands.
+- Audit incoming HomeKit/internal control writes and include the HomeKit connection address when available; preserve operation context across queued commands.
+- Add a UI **Verbose Debug Logging** switch (`debug`, default false) that works without global Homebridge debug mode.
+- Trace SmartCast requests/responses, discovery, polling, state changes, read coalescing, command queues, authentication status, and shutdown when verbose logging is enabled.
+- Redact credentials and configured token values, omit arbitrary non-JSON response bodies, and bound individual log entries. Document static authentication and the absence of automatic token refresh.
+- Add diagnostic regressions proving status polling/discovery send GETs only, command audit stays enabled with debug off, request context stays isolated, and secrets do not appear in logs.
+
 ## 0.1.1
 
 - Extract a protocol-independent soundbar controller for discovery, polling, state, commands, and subscribers; keep HomeKit service construction and preferences in the platform adapter.

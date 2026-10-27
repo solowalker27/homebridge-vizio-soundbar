@@ -52,6 +52,12 @@
         "minimum": 500,
         "maximum": 4000,
         "description": "Per-request timeout. Commands requiring a read and write have a total deadline of twice this value."
+      },
+      "debug": {
+        "title": "Verbose Debug Logging",
+        "type": "boolean",
+        "default": false,
+        "description": "Log all SmartCast requests and responses, polling, state changes, command queues, and authentication status. Works without Homebridge global debug mode. Authentication secrets are redacted. Commands are always logged even when this is off. Restart the soundbar child bridge after changing this setting."
       }
     }
   }

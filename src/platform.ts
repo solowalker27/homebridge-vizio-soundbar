@@ -6,6 +6,7 @@ import type {
 import { SmartCastClient } from './client.js';
 import type { SoundbarInput } from './client.js';
 import { SoundbarController } from './controller.js';
+import { SoundbarDiagnostics } from './diagnostics.js';
 import type { SoundbarUpdate } from './controller.js';
 import { parseConfig } from './config.js';
 import type { SoundbarConfig } from './config.js';
@@ -25,6 +26,7 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
   private readonly hap: HAP;
   private readonly options: SoundbarConfig;
   private readonly controller: SoundbarController;
+  private readonly diagnostics: SoundbarDiagnostics;
   private readonly preferences: PreferenceStore;
   public readonly accessory: PlatformAccessory;
   private readonly television: Service;
@@ -36,13 +38,15 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
   constructor(private readonly log: Logger, config: PlatformConfig, private readonly api: API) {
     this.options = parseConfig(config);
     this.hap = api.hap;
-    this.controller = new SoundbarController(new SmartCastClient(this.options), this.options, (error, operation) => {
+    this.diagnostics = new SoundbarDiagnostics(log, this.options.debug, this.options.authToken);
+    this.log.info('Soundbar command logging enabled; verbose debug logging %s.', this.options.debug ? 'enabled' : 'disabled');
+    this.controller = new SoundbarController(new SmartCastClient(this.options, this.diagnostics), this.options, (error, operation) => {
       if (operation === 'discovery') {
         this.log.warn('Soundbar discovery failed; retrying in 30 seconds: %s', error.message);
       } else {
         this.log.debug('Soundbar %s failed: %s', operation, error.message);
       }
-    });
+    }, this.diagnostics);
     // Preserve the original UUID seed for existing installations with an explicit name.
     const uuid = this.hap.uuid.generate('homebridge:vizio-soundbar:accessory:' + (config.name ?? 'undefined'));
     this.preferences = new PreferenceStore(join(api.user.storagePath(), 'vizio-soundbar', `${uuid}.json`));
@@ -109,65 +113,99 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
     }
   }
 
+  private runSet(
+    characteristic: string, value: CharacteristicValue, connection: { remoteAddress: string } | undefined,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    return this.diagnostics.run({
+      source: connection ? 'HomeKit SET' : 'Homebridge/internal SET', characteristic,
+      client: connection?.remoteAddress, operationId: this.diagnostics.nextId(),
+    }, async () => {
+      this.diagnostics.audit('Control write received', { value });
+      try {
+        await operation();
+        this.diagnostics.debug('Control write completed');
+      } catch (error) {
+        this.diagnostics.audit('Control write failed', { value, error });
+        throw error;
+      }
+    });
+  }
+
+  private runGet<T>(
+    characteristic: string, connection: { remoteAddress: string } | undefined, operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.diagnostics.run({
+      source: connection ? 'HomeKit GET' : 'Homebridge/internal GET', characteristic, client: connection?.remoteAddress,
+    }, () => {
+      this.diagnostics.debug('Control read received');
+      return this.communicate(operation);
+    });
+  }
+
   private prepareControls(): void {
     const C = this.hap.Characteristic;
     this.television
       .setCharacteristic(C.ConfiguredName, this.options.name)
       .setCharacteristic(C.SleepDiscoveryMode, C.SleepDiscoveryMode.ALWAYS_DISCOVERABLE);
-    this.television.getCharacteristic(C.ConfiguredName).onSet(async value => {
-      const name = this.validName(value);
-      await this.communicate(() => this.preferences.update(name));
-    });
+    this.television.getCharacteristic(C.ConfiguredName)
+      .onSet((value, _context, connection) => this.runSet('Television.ConfiguredName', value, connection, async () => {
+        const name = this.validName(value);
+        await this.communicate(() => this.preferences.update(name));
+      }));
     this.television.getCharacteristic(C.Active)
-      .onGet(() => this.communicate(() => this.controller.getPower()))
-      .onSet(async value => {
+      .onGet((_context, connection) => this.runGet('Active', connection, () => this.controller.getPower()))
+      .onSet((value, _context, connection) => this.runSet('Television.Active', value, connection, async () => {
         if (value !== C.Active.ACTIVE && value !== C.Active.INACTIVE) {
           throw this.invalid();
         }
         await this.communicate(() => this.controller.setPower(value === C.Active.ACTIVE));
-      });
+      }));
     this.television.getCharacteristic(C.ActiveIdentifier)
-      .onGet(() => this.communicate(async () => this.resolveInput(await this.controller.getInput())))
-      .onSet(async value => {
+      .onGet((_context, connection) => this.runGet('ActiveIdentifier', connection, async () =>
+        this.resolveInput(await this.controller.getInput())))
+      .onSet((value, _context, connection) => this.runSet('Television.ActiveIdentifier', value, connection, async () => {
         const input = typeof value === 'number' ? this.inputs.get(value) : undefined;
         if (!input) {
           throw this.invalid();
         }
         await this.communicate(() => this.controller.setInput(input.name));
-      });
+      }));
     // Only advertise remote commands defined by the existing soundbar protocol.
     this.television.getCharacteristic(C.RemoteKey)
       .setProps({ validValues: [C.RemoteKey.REWIND, C.RemoteKey.FAST_FORWARD] })
-      .onSet(async value => {
+      .onSet((value, _context, connection) => this.runSet('Television.RemoteKey', value, connection, async () => {
         if (value !== C.RemoteKey.REWIND && value !== C.RemoteKey.FAST_FORWARD) {
           throw this.invalid();
         }
         await this.communicate(() => this.controller.seek(value === C.RemoteKey.FAST_FORWARD));
-      });
+      }));
     this.speaker.setCharacteristic(C.VolumeControlType, C.VolumeControlType.ABSOLUTE);
-    this.speaker.getCharacteristic(C.Active).onGet(() => this.communicate(() => this.controller.getPower()));
+    this.speaker.getCharacteristic(C.Active)
+      .onGet((_context, connection) => this.runGet('Active', connection, () => this.controller.getPower()));
     this.speaker.getCharacteristic(C.Volume)
-      .onGet(() => this.communicate(() => this.controller.getVolume()))
-      .onSet(async value => {
+      .onGet((_context, connection) => this.runGet('Volume', connection, () => this.controller.getVolume()))
+      .onSet((value, _context, connection) => this.runSet('Speaker.Volume', value, connection, async () => {
         if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) {
           throw this.invalid();
         }
         await this.communicate(() => this.controller.setVolume(value));
-      });
+      }));
     this.speaker.getCharacteristic(C.Mute)
-      .onGet(() => this.communicate(() => this.controller.getMute()))
-      .onSet(async value => {
+      .onGet((_context, connection) => this.runGet('Mute', connection, () => this.controller.getMute()))
+      .onSet((value, _context, connection) => this.runSet('Speaker.Mute', value, connection, async () => {
         if (typeof value !== 'boolean') {
           throw this.invalid();
         }
         await this.communicate(() => this.controller.setMute(value));
-      });
-    this.speaker.getCharacteristic(C.VolumeSelector).onSet(async value => {
-      if (value !== C.VolumeSelector.INCREMENT && value !== C.VolumeSelector.DECREMENT) {
-        throw this.invalid();
-      }
-      await this.communicate(() => this.controller.changeVolume(value === C.VolumeSelector.INCREMENT));
-    });
+      }));
+    this.speaker.getCharacteristic(C.VolumeSelector)
+      .onSet((value, _context, connection) => this.runSet('Speaker.VolumeSelector', value, connection, async () => {
+        if (value !== C.VolumeSelector.INCREMENT && value !== C.VolumeSelector.DECREMENT) {
+          throw this.invalid();
+        }
+        await this.communicate(() => this.controller.changeVolume(value === C.VolumeSelector.INCREMENT));
+      }));
   }
 
   private validName(value: CharacteristicValue): string {
@@ -194,13 +232,15 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
         : /usb/i.test(input.name) ? C.InputSourceType.USB : C.InputSourceType.OTHER)
       .setCharacteristic(C.CurrentVisibilityState, hidden)
       .setCharacteristic(C.TargetVisibilityState, hidden);
-    service.getCharacteristic(C.ConfiguredName).onSet(async value => {
+    service.getCharacteristic(C.ConfiguredName)
+      .onSet((value, _context, connection) => this.runSet('InputSource.ConfiguredName', value, connection, async () => {
       const name = this.validName(value);
       await this.communicate(() => this.preferences.update(undefined, {
         key: input.name, preference: { name },
       }));
-    });
-    service.getCharacteristic(C.TargetVisibilityState).onSet(async value => {
+    }));
+    service.getCharacteristic(C.TargetVisibilityState)
+      .onSet((value, _context, connection) => this.runSet('InputSource.TargetVisibilityState', value, connection, async () => {
       if (value !== C.TargetVisibilityState.SHOWN && value !== C.TargetVisibilityState.HIDDEN) {
         throw this.invalid();
       }
@@ -208,7 +248,7 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
         key: input.name, preference: { hidden: value === C.TargetVisibilityState.HIDDEN },
       }));
       service.updateCharacteristic(C.CurrentVisibilityState, value);
-    });
+    }));
     this.television.addLinkedService(service);
   }
 

@@ -1,4 +1,6 @@
 import type { SmartCastClient, SoundbarInput } from './client.js';
+import { silentDiagnostics } from './diagnostics.js';
+import type { Diagnostics } from './diagnostics.js';
 
 export interface SoundbarState {
   power: number;
@@ -39,6 +41,7 @@ export class SoundbarController {
     private readonly device: Device,
     private readonly options: Options,
     private readonly onError: (error: Error, operation: string) => void = () => undefined,
+    private readonly diagnostics: Diagnostics = silentDiagnostics,
   ) {
     this.getters = {
       power: () => device.getPower(), volume: () => device.getVolume(), mute: () => device.getMute(),
@@ -62,7 +65,9 @@ export class SoundbarController {
 
   private async discover(ready: (inputs: readonly SoundbarInput[]) => void | Promise<void>): Promise<void> {
     try {
-      const inputs = await this.device.listInputs();
+      this.diagnostics.debug('Input discovery started');
+      const inputs = await this.diagnostics.run({ source: 'discovery' }, () => this.device.listInputs());
+      this.diagnostics.debug('Input discovery completed', { inputs });
       this.ensureOpen();
       this.inputNames.clear();
       this.inputAliases.clear();
@@ -79,6 +84,7 @@ export class SoundbarController {
       void this.poll();
     } catch (error) {
       if (!this.stopped) {
+        this.diagnostics.debug('Input discovery failed; retry scheduled', { error, retryMs: this.options.retryInterval ?? 30_000 });
         this.onError(asError(error), 'discovery');
         this.retryTimer = setTimeout(() => { void this.discover(ready); }, this.options.retryInterval ?? 30_000);
         this.retryTimer.unref();
@@ -109,6 +115,10 @@ export class SoundbarController {
     if (Object.is(previous, value) || (previous instanceof Error && value instanceof Error && previous.message === value.message)) {
       return;
     }
+    this.diagnostics.debug('Soundbar state changed', { property: key, previous, current: value });
+    if ((key === 'power' || key === 'input') && !(value instanceof Error)) {
+      this.diagnostics.state('Soundbar state changed', { property: key, previous, current: value });
+    }
     this.current[key] = value;
     if (value instanceof Error) {
       this.onError(value, key);
@@ -126,9 +136,11 @@ export class SoundbarController {
     if (this.stopped) {
       return Promise.reject(new Error('Soundbar controller is closed'));
     }
+    this.diagnostics.debug('State read requested', { property: key });
     const revision = this.revisions[key];
     const existing = this.reads.get(key);
     if (existing?.revision === revision) {
+      this.diagnostics.debug('State read shared with an in-flight request', { property: key });
       return existing.promise as Promise<SoundbarState[K]>;
     }
     const deadline = Date.now() + this.options.requestTimeout * 2;
@@ -140,11 +152,15 @@ export class SoundbarController {
       }
     };
     const barrier = this.writes.get(key);
+    if (barrier) {
+      this.diagnostics.debug('State read waiting for latest command', { property: key });
+    }
     const work = (async () => {
       // Reads requested during a write wait for its acknowledgement, including failed writes.
       await barrier?.catch(() => undefined);
       checkDeadline();
       if (revision !== this.revisions[key]) {
+        this.diagnostics.debug('Stale state read discarded; reading latest value', { property: key });
         return this.read(key);
       }
       let value: SoundbarState[K];
@@ -160,6 +176,7 @@ export class SoundbarController {
       checkDeadline();
       // Re-read rather than returning an obsolete value to the adapter's own GET handler.
       if (revision !== this.revisions[key]) {
+        this.diagnostics.debug('Stale state read discarded; reading latest value', { property: key });
         return this.read(key);
       }
       this.publish(key, value);
@@ -199,14 +216,17 @@ export class SoundbarController {
   private write<K extends Property>(key: K, operation: () => Promise<void>, value?: SoundbarState[K]): Promise<void> {
     this.ensureOpen();
     const revision = ++this.revisions[key];
+    this.diagnostics.debug('Controller command started', { property: key, value, revision });
     const result = (async () => {
       try {
         await operation();
+        this.diagnostics.debug('Controller command completed', { property: key, revision });
         this.ensureOpen();
         if (revision === this.revisions[key] && value !== undefined) {
           this.publish(key, value);
         }
       } catch (error) {
+        this.diagnostics.debug('Controller command failed', { property: key, revision, error });
         if (revision === this.revisions[key]) {
           this.publish(key, asError(error));
         }
@@ -214,6 +234,12 @@ export class SoundbarController {
       }
     })();
     this.writes.set(key, result);
+    const clear = () => {
+      if (this.writes.get(key) === result) {
+        this.writes.delete(key);
+      }
+    };
+    void result.then(clear, clear);
     return result;
   }
 
@@ -234,6 +260,7 @@ export class SoundbarController {
 
   async seek(forward: boolean): Promise<void> {
     this.ensureOpen();
+    this.diagnostics.debug('Remote seek requested', { forward });
     await this.device.key(2, forward ? 0 : 1);
     this.ensureOpen();
   }
@@ -245,7 +272,11 @@ export class SoundbarController {
   }
 
   private async poll(): Promise<void> {
-    await this.refresh();
+    await this.diagnostics.run({ source: 'poll' }, async () => {
+      this.diagnostics.debug('Poll started');
+      await this.refresh();
+      this.diagnostics.debug('Poll completed', { nextPollSeconds: this.options.pollInterval });
+    });
     // Schedule from completion so slow devices cannot build up overlapping polls.
     if (!this.stopped && this.options.pollInterval !== 0) {
       this.pollTimer = setTimeout(() => { void this.poll(); }, this.options.pollInterval * 1000);
@@ -257,6 +288,7 @@ export class SoundbarController {
     if (this.stopped) {
       return;
     }
+    this.diagnostics.debug('Controller shutdown', { pendingReads: this.reads.size });
     this.stopped = true;
     clearTimeout(this.retryTimer);
     clearTimeout(this.pollTimer);
