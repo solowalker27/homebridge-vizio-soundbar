@@ -1,45 +1,54 @@
 {
-  "private": false,
-  "displayName": "Homebridge Vizio Soundbar",
   "name": "@jorts/homebridge-vizio-soundbar",
-  "version": "0.0.3",
-  "description": "Homebridge plugin for controlling vizio soundbars (very buggy)",
+  "version": "0.1.0",
+  "displayName": "Homebridge Vizio Soundbar",
+  "description": "Local HomeKit control for Vizio SmartCast soundbars",
   "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": "./dist/index.js",
+  "files": [
+    "dist",
+    "config.schema.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
-    "url": "git://github.com/furryaccount/homebridge-vizio-soundbar.git"
+    "url": "git+https://github.com/solowalker27/homebridge-vizio-soundbar.git"
   },
   "bugs": {
-    "url": "https://github.com/furryaccount/homebridge-vizio-soundbar/issues"
+    "url": "https://github.com/solowalker27/homebridge-vizio-soundbar/issues"
   },
+  "homepage": "https://github.com/solowalker27/homebridge-vizio-soundbar#readme",
   "engines": {
-    "node": ">=10.17.0",
-    "homebridge": ">=1.0.0"
-  },
-  "main": "dist/index.js",
-  "scripts": {
-    "lint": "eslint src/**.ts --max-warnings=0",
-    "watch": "npm run build && npm link && nodemon",
-    "build": "rimraf ./dist && tsc",
-    "prepublishOnly": "npm run lint && npm run build"
+    "node": "^22.13.0 || ^24.0.0 || ^26.0.0",
+    "homebridge": "^2.4.0"
   },
   "keywords": [
-    "homebridge-plugin"
+    "homebridge-plugin",
+    "vizio",
+    "soundbar",
+    "homekit"
   ],
-  "dependencies": {
-    "vizio-smart-cast": "github:furryaccount/vizio-soundbar"
+  "scripts": {
+    "clean": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\"",
+    "build": "npm run clean && tsc",
+    "lint": "eslint . --max-warnings=0",
+    "test": "npm run build && node --test test/*.test.js",
+    "check": "npm run lint && npm test",
+    "watch": "tsc --watch",
+    "prepublishOnly": "npm run check",
+    "prepack": "npm run build"
   },
   "devDependencies": {
-    "@types/node": "^14.14.6",
-    "@typescript-eslint/eslint-plugin": "^4.6.1",
-    "@typescript-eslint/parser": "^4.6.1",
-    "eslint": "^7.13.0",
-    "homebridge": "^1.2.3",
-    "nodemon": "^2.0.6",
-    "rimraf": "^3.0.2",
-    "ts-node": "^9.0.0",
-    "typescript": "^4.0.5"
-  },
-  "homepage": "https://github.com/furryaccount/homebridge-vizio-soundbar#readme",
-  "author": ""
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "eslint": "^10.13.0",
+    "homebridge": "^2.4.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1"
+  }
 }

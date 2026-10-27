@@ -1,150 +1,95 @@
+# Homebridge Vizio Soundbar
 
-<p align="center">
+Local Apple Home control for network-connected Vizio SmartCast soundbars, built for Homebridge 2.4 and later. The soundbar is exposed as an external audio receiver with a primary Television service and a linked TelevisionSpeaker service, using Homebridge's current HomeKit definitions and promise-based characteristic handlers.
 
-<img src="https://github.com/homebridge/branding/raw/master/logos/homebridge-wordmark-logo-vertical.png" width="150">
+## Requirements
 
-</p>
+- Homebridge **2.4.0 or later within 2.x**.
+- Node.js **22.13+, 24.x, or 26.x**. Node 24 LTS is a suitable default.
+- A Vizio soundbar exposing the SmartCast audio settings API on your local network. Bluetooth-only soundbars are not supported.
+- Network access from Homebridge to the soundbar, normally on TCP port 9000. Reserve its IP address in your router.
 
+This release targets the HomeKit services used by current Apple Home/iOS. It does not add AirPlay audio streaming or Matter support. Automated checks use Homebridge 2.4.0 and a simulated HTTPS device; physical soundbar and iPhone compatibility still needs validation on your hardware. Vizio firmware and model differences can affect available commands.
 
-# Homebridge Platform Plugin Template
+## Install and configure
 
-This is a template Homebridge platform plugin and can be used as a base to help you get started developing your own plugin.
+Install `@jorts/homebridge-vizio-soundbar` through the Homebridge UI. For a local checkout:
 
-This template should be use in conjunction with the [developer documentation](https://developers.homebridge.io/). A full list of all supported service types, and their characteristics is available on this site.
-
-## Clone As Template
-
-Click the link below to create a new GitHub Repository using this template, or click the *Use This Template* button above.
-
-<span align="center">
-
-### [Create New Repository From Template](https://github.com/homebridge/homebridge-plugin-template/generate)
-
-</span>
-
-## Setup Development Environment
-
-To develop Homebridge plugins you must have Node.js 12 or later installed, and a modern code editor such as [VS Code](https://code.visualstudio.com/). This plugin template uses [TypeScript](https://www.typescriptlang.org/) to make development easier and comes with pre-configured settings for [VS Code](https://code.visualstudio.com/) and ESLint. If you are using VS Code install these extensions:
-
-* [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint)
-
-## Install Development Dependencies
-
-Using a terminal, navigate to the project folder and run this command to install the development dependencies:
-
-```
-npm install
+```sh
+npm ci
+npm run check
+npm pack
 ```
 
-## Update package.json
+Install the resulting package on your Homebridge host using its npm plugin installation workflow. For development on a dedicated test instance, `npm link` makes this checkout available to Homebridge after `npm run build`.
 
-Open the [`package.json`](./package.json) and change the following attributes:
+Add one platform entry to your Homebridge configuration:
 
-* `name` - this should be prefixed with `homebridge-` or `@username/homebridge-` and contain no spaces or special characters apart from a dashes
-* `displayName` - this is the "nice" name displayed in the Homebridge UI
-* `repository.url` - Link to your GitHub repo
-* `bugs.url` - Link to your GitHub repo issues page
-
-When you are ready to publish the plugin you should set `private` to false, or remove the attribute entirely.
-
-## Update Plugin Defaults
-
-Open the [`src/settings.ts`](./src/settings.ts) file and change the default values:
-
-* `PLATFORM_NAME` - Set this to be the name of your platform. This is the name of the platform that users will use to register the plugin in the Homebridge `config.json`.
-* `PLUGIN_NAME` - Set this to be the same name you set in the [`package.json`](./package.json) file. 
-
-Open the [`config.schema.json`](./config.schema.json) file and change the following attribute:
-
-* `pluginAlias` - set this to match the `PLATFORM_NAME` you defined in the previous step.
-
-## Build Plugin
-
-TypeScript needs to be compiled into JavaScript before it can run. The following command will compile the contents of your [`src`](./src) directory and put the resulting code into the `dist` folder.
-
-```
-npm run build
+```json
+{
+  "platforms": [
+    {
+      "platform": "HomebridgeVizioSoundbar",
+      "name": "Living Room Soundbar",
+      "ip": "192.168.1.50"
+    }
+  ]
+}
 ```
 
-## Link To Homebridge
+| Setting | Default | Description |
+| --- | --- | --- |
+| `name` | `Vizio Soundbar` | Accessory name. Keep the configuration name unchanged after pairing; it determines the accessory identity. Rename it in Apple Home instead. |
+| `ip` | Required | IP address or hostname, optionally including a port, such as `192.168.1.50:9000`. Omit the URL scheme. Bracket IPv6 addresses, such as `[fd00::1234]:9000`. |
+| `authToken` | Unset | Existing SmartCast authentication token, if your model requires one. Token acquisition/pairing with Vizio is outside this plugin. |
+| `pollInterval` | `30` | Seconds between background state refreshes: 10–3600, or 0 to disable. Reads requested by HomeKit still query the device directly. |
+| `requestTimeout` | `3000` | Per-request timeout in milliseconds, from 500 to 4000. Hash-based read/write commands have a total deadline of twice this value, including queue time. |
 
-Run this command so your global install of Homebridge can discover the plugin in your development environment:
+After restarting Homebridge, wait for the log message confirming the soundbar was published. In **Apple Home → Add Accessory → More Options**, select the soundbar and use your Homebridge PIN. External receivers are paired separately from the main Homebridge bridge.
 
-```
-npm link
-```
+The plugin discovers the available inputs before publishing. If the soundbar is unavailable at startup, discovery retries every 30 seconds. Ensure network standby/Wi-Fi remains available when the soundbar is off if you want to turn it on from Home.
 
-You can now start Homebridge, use the `-D` flag so you can see debug log messages in your plugin:
+## Controls
 
-```
-homebridge -D
-```
+- Power on/off, current input, input selection, mute, absolute volume, and relative volume buttons.
+- Input names and visibility configurable through the Home app's receiver settings. These settings survive Homebridge restarts and do not change the protocol names sent to Vizio.
+- Background updates for changes made with the physical remote or Vizio app. Communication failures appear as unavailable characteristics; an unreachable soundbar is not treated as powered off.
+- Rewind/fast-forward remote commands using the existing SmartCast key codes. Other remote keys are not advertised. Media command support depends on the soundbar's firmware and selected input.
 
-## Watch For Changes and Build Automatically
+Apple Home decides which controls it displays for receivers. Not every client exposes an absolute-volume slider; HomeKit clients that support TelevisionSpeaker volume can use the advertised volume characteristic.
 
-If you want to have your code compile automatically as you make changes, and restart Homebridge automatically between changes you can run:
+The HTTPS client accepts the soundbar's self-signed certificate only within its own connection agent. It does not change Node's global TLS settings. Authentication headers are sent for all requests when configured, and response bodies/tokens are not logged. Use the plugin on a trusted local network.
 
-```
-npm run watch
-```
+## Upgrading from 0.0.3
 
-This will launch an instance of Homebridge in debug mode which will restart every time you make a change to the source code. It will load the config stored in the default location under `~/.homebridge`. You may need to stop other running instances of Homebridge while using this command to prevent conflicts. You can adjust the Homebridge startup command in the [`nodemon.json`](./nodemon.json) file.
+Back up your Homebridge configuration and pairing data, then upgrade Node and Homebridge before installing this release. The old Node 10/Homebridge 1 baseline is no longer supported.
 
-## Customise Plugin
+The existing `platform`, `ip`, and `name` options continue to work. The UUID seed is preserved, including for configurations without an explicit name. Keep the original configuration name to retain that identity.
 
-You can now start customising the plugin template to suit your requirements.
+The accessory category changes from generic Speaker to Audio Receiver, with Television marked as primary. Home may cache the old presentation. If the accessory's controls do not refresh after restarting Homebridge and the Home app, remove and pair **only the soundbar** again. There is no need to reset the main bridge.
 
-* [`src/platform.ts`](./src/platform.ts) - this is where your device setup and discovery should go.
-* [`src/platformAccessory.ts`](./src/platformAccessory.ts) - this is where your accessory control logic should go, you can rename or create multiple instances of this file for each accessory type you need to implement as part of your platform plugin. You can refer to the [developer documentation](https://developers.homebridge.io/) to see what characteristics you need to implement for each service type.
-* [`config.schema.json`](./config.schema.json) - update the config schema to match the config you expect from the user. See the [Plugin Config Schema Documentation](https://developers.homebridge.io/#/config-schema).
+Input identifiers now use stable, nonzero values derived from each protocol input name instead of array positions. **Reselect inputs in existing scenes and automations after upgrading.** Names/visibility set in the old version were not persisted and may need to be set once more. New settings are saved under `vizio-soundbar/<accessory UUID>.json` in Homebridge's storage directory; include this directory in backups.
 
-## Versioning Your Plugin
+The plugin identifier now matches the scoped npm package name, `@jorts/homebridge-vizio-soundbar`. The package name itself has not changed.
 
-Given a version number `MAJOR`.`MINOR`.`PATCH`, such as `1.4.3`, increment the:
+## Development and verification
 
-1. **MAJOR** version when you make breaking changes to your plugin,
-2. **MINOR** version when you add functionality in a backwards compatible manner, and
-3. **PATCH** version when you make backwards compatible bug fixes.
-
-You can use the `npm version` command to help you with this:
-
-```bash
-# major update / breaking changes
-npm version major
-
-# minor update / new features
-npm version update
-
-# patch / bugfixes
-npm version patch
+```sh
+npm ci
+npm run check
+npm pack --dry-run
 ```
 
-## Publish Package
+`npm run check` runs ESLint, a strict TypeScript build, and Node's test runner. Tests use a loopback HTTPS server with a committed **test-only** self-signed certificate and private key. They never contact a physical soundbar or publish mDNS advertisements. The harness instantiates Homebridge's real API and HAP services; production code uses public Homebridge types and the injected `api.hap` objects, with no Homebridge runtime dependency of its own.
 
-When you are ready to publish your plugin to [npm](https://www.npmjs.com/), make sure you have removed the `private` attribute from the [`package.json`](./package.json) file then run:
+CI runs the checks on Node 22, 24, and 26. `npm run watch` recompiles on changes; restart your dedicated test Homebridge instance to load the compiled output.
 
-```
-npm publish
-```
+Before deploying to your primary Homebridge installation, verify on your device:
 
-If you are publishing a scoped plugin, i.e. `@username/homebridge-xxx` you will need to add `--access=public` to command the first time you publish.
+1. Start Homebridge with the soundbar online, pair it, and check power, every input, mute, absolute volume, and the remote's volume buttons.
+2. Change settings with the physical remote and confirm Home updates within the configured polling interval.
+3. Rename/hide an input in Home, restart Homebridge, and confirm the settings remain.
+4. Restart Homebridge while the soundbar is unreachable, then restore connectivity and confirm discovery recovers.
+5. Check power-on from standby; some soundbars disable their network interface when off.
 
-#### Publishing Beta Versions
-
-You can publish *beta* versions of your plugin for other users to test before you release it to everyone.
-
-```bash
-# create a new pre-release version (eg. 2.1.0-beta.1)
-npm version prepatch --preid beta
-
-# publsh to @beta
-npm publish --tag=beta
-```
-
-Users can then install the  *beta* version by appending `@beta` to the install command, for example:
-
-```
-sudo npm install -g homebridge-example-plugin@beta
-```
-
-
+API references: [Homebridge releases](https://github.com/homebridge/homebridge/releases), [supported Node versions](https://github.com/homebridge/homebridge/wiki/How-To-Update-Node.js), [Homebridge plugin API](https://developers.homebridge.io/), and the [original soundbar protocol implementation](https://github.com/furryaccount/vizio-soundbar/blob/master/index.js).

@@ -2,20 +2,56 @@
   "pluginAlias": "HomebridgeVizioSoundbar",
   "pluginType": "platform",
   "singular": true,
+  "headerDisplay": "Control a network-connected Vizio SmartCast soundbar. After restarting Homebridge, pair the soundbar separately in Apple Home using Add Accessory → More Options and your Homebridge PIN.",
   "schema": {
     "type": "object",
+    "required": [
+      "ip"
+    ],
     "properties": {
-      "ip": {
-        "title": "Soundbar IP Address",
-        "type": "string",
-        "required": true,
-        "default": "192.168.6.9"
-      },
       "name": {
-        "title": "Device Name",
+        "title": "Soundbar Name",
         "type": "string",
-        "required": true,
-        "default": "My Soundbar"
+        "default": "Vizio Soundbar",
+        "minLength": 1,
+        "maxLength": 64,
+        "description": "Keep this name unchanged after pairing; it is part of the accessory's identity. You can rename the accessory inside Apple Home."
+      },
+      "ip": {
+        "title": "Soundbar IP Address or Hostname",
+        "type": "string",
+        "minLength": 1,
+        "description": "For example, 192.168.1.50 or soundbar.local:9000. Omit https://. Use a DHCP reservation so this address stays stable."
+      },
+      "authToken": {
+        "title": "SmartCast Authentication Token (optional)",
+        "type": "string",
+        "format": "password",
+        "description": "An existing SmartCast token, only if your model requires authentication. This plugin does not initiate SmartCast pairing."
+      },
+      "pollInterval": {
+        "title": "State Refresh Interval (seconds)",
+        "type": "integer",
+        "default": 30,
+        "minimum": 0,
+        "maximum": 3600,
+        "anyOf": [
+          {
+            "const": 0
+          },
+          {
+            "minimum": 10
+          }
+        ],
+        "description": "Use 10–3600 seconds to reflect physical remote changes, or 0 to disable background refresh."
+      },
+      "requestTimeout": {
+        "title": "Request Timeout (milliseconds)",
+        "type": "integer",
+        "default": 3000,
+        "minimum": 500,
+        "maximum": 4000,
+        "description": "Per-request timeout. Commands requiring a read and write have a total deadline of twice this value."
       }
     }
   }

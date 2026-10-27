@@ -1,9 +1,4 @@
-/**
- * This is the name of the platform that users will use to register the plugin in the Homebridge config.json
- */
 export const PLATFORM_NAME = 'HomebridgeVizioSoundbar';
-
-/**
- * This must match the name of your plugin as defined the package.json
- */
-export const PLUGIN_NAME = 'homebridge-vizio-soundbar';
+// Keep in sync with package.json; Homebridge uses this to associate external accessories.
+export const PLUGIN_NAME = '@jorts/homebridge-vizio-soundbar';
+export const PLUGIN_VERSION = '0.1.0';
