@@ -5,6 +5,8 @@ import type {
 } from 'homebridge';
 import { SmartCastClient } from './client.js';
 import type { SoundbarInput } from './client.js';
+import { SoundbarController } from './controller.js';
+import type { SoundbarUpdate } from './controller.js';
 import { parseConfig } from './config.js';
 import type { SoundbarConfig } from './config.js';
 import { PreferenceStore } from './preferences.js';
@@ -22,23 +24,25 @@ function message(error: unknown): string {
 export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
   private readonly hap: HAP;
   private readonly options: SoundbarConfig;
-  private readonly client: SmartCastClient;
+  private readonly controller: SoundbarController;
   private readonly preferences: PreferenceStore;
   public readonly accessory: PlatformAccessory;
   private readonly television: Service;
   private readonly speaker: Service;
   private readonly inputs = new Map<number, SoundbarInput>();
-  private retryTimer?: NodeJS.Timeout;
-  private pollTimer?: NodeJS.Timeout;
   private stopped = false;
   private published = false;
-  private refreshing = false;
-  private revision = 0;
 
   constructor(private readonly log: Logger, config: PlatformConfig, private readonly api: API) {
     this.options = parseConfig(config);
     this.hap = api.hap;
-    this.client = new SmartCastClient(this.options);
+    this.controller = new SoundbarController(new SmartCastClient(this.options), this.options, (error, operation) => {
+      if (operation === 'discovery') {
+        this.log.warn('Soundbar discovery failed; retrying in 30 seconds: %s', error.message);
+      } else {
+        this.log.debug('Soundbar %s failed: %s', operation, error.message);
+      }
+    });
     // Preserve the original UUID seed for existing installations with an explicit name.
     const uuid = this.hap.uuid.generate('homebridge:vizio-soundbar:accessory:' + (config.name ?? 'undefined'));
     this.preferences = new PreferenceStore(join(api.user.storagePath(), 'vizio-soundbar', `${uuid}.json`));
@@ -54,6 +58,7 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
     this.speaker = this.accessory.addService(new S.TelevisionSpeaker(`${this.options.name} Speaker`, 'speakerService'));
     this.television.addLinkedService(this.speaker);
     this.prepareControls();
+    this.controller.subscribe(update => this.updateState(update));
     api.on('didFinishLaunching', () => { void this.launch(); });
     api.on('shutdown', () => this.shutdown());
   }
@@ -68,46 +73,25 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
       return;
     }
     this.television.updateCharacteristic(this.hap.Characteristic.ConfiguredName, this.preferences.name ?? this.options.name);
-    await this.discover();
+    await this.controller.start(inputs => this.publish(inputs));
   }
 
-  private async discover(): Promise<void> {
-    try {
-      const inputs = await this.client.listInputs();
-      if (this.stopped) {
-        return;
-      }
-      // Validate all identifiers before adding services so a retry cannot leave partial input services.
-      const identifiers = new Set<number>();
-      if (inputs.length > 90) {
-        throw new Error('Soundbar returned too many inputs for a HomeKit accessory');
-      }
-      for (const input of inputs) {
-        const id = inputIdentifier(input.name);
-        if (identifiers.has(id)) {
-          throw new Error('Soundbar input identifiers collide');
-        }
-        identifiers.add(id);
-      }
-      for (const input of inputs) {
-        this.prepareInput(input);
-      }
-      this.api.publishExternalAccessories(PLUGIN_NAME, [this.accessory]);
-      this.published = true;
-      this.log.info('Published %s with %s inputs. Pair it separately using Add Accessory in Apple Home.',
-        this.options.name, inputs.length);
-      void this.refresh();
-      if (this.options.pollInterval !== 0) {
-        this.pollTimer = setInterval(() => { void this.refresh(); }, this.options.pollInterval * 1000);
-        this.pollTimer.unref();
-      }
-    } catch (error) {
-      if (!this.stopped) {
-        this.log.warn('Soundbar discovery failed; retrying in 30 seconds: %s', message(error));
-        this.retryTimer = setTimeout(() => { void this.discover(); }, 30_000);
-        this.retryTimer.unref();
-      }
+  private publish(inputs: readonly SoundbarInput[]): void {
+    if (this.stopped || this.published) {
+      return;
     }
+    // HomeKit limits and identifiers belong to this adapter, not the device controller.
+    const identifiers = new Set(inputs.map(input => inputIdentifier(input.name)));
+    if (inputs.length > 90 || identifiers.size !== inputs.length) {
+      throw new Error('Soundbar inputs exceed HomeKit limits or their identifiers collide');
+    }
+    for (const input of inputs) {
+      this.prepareInput(input);
+    }
+    this.api.publishExternalAccessories(PLUGIN_NAME, [this.accessory]);
+    this.published = true;
+    this.log.info('Published %s with %s inputs. Pair it separately using Add Accessory in Apple Home.',
+      this.options.name, inputs.length);
   }
 
   private invalid(): Error {
@@ -125,16 +109,6 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
     }
   }
 
-  private async write(operation: () => Promise<void>, update?: () => void): Promise<void> {
-    this.revision++;
-    try {
-      await this.communicate(operation);
-      update?.();
-    } finally {
-      this.revision++;
-    }
-  }
-
   private prepareControls(): void {
     const C = this.hap.Characteristic;
     this.television
@@ -145,27 +119,21 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
       await this.communicate(() => this.preferences.update(name));
     });
     this.television.getCharacteristic(C.Active)
-      .onGet(() => this.communicate(async () => {
-        const power = await this.client.getPower();
-        this.speaker.updateCharacteristic(C.Active, power);
-        return power;
-      }))
+      .onGet(() => this.communicate(() => this.controller.getPower()))
       .onSet(async value => {
         if (value !== C.Active.ACTIVE && value !== C.Active.INACTIVE) {
           throw this.invalid();
         }
-        await this.write(() => this.client.setPower(value === C.Active.ACTIVE), () => {
-          this.speaker.updateCharacteristic(C.Active, value);
-        });
+        await this.communicate(() => this.controller.setPower(value === C.Active.ACTIVE));
       });
     this.television.getCharacteristic(C.ActiveIdentifier)
-      .onGet(() => this.communicate(async () => this.resolveInput(await this.client.getInput())))
+      .onGet(() => this.communicate(async () => this.resolveInput(await this.controller.getInput())))
       .onSet(async value => {
         const input = typeof value === 'number' ? this.inputs.get(value) : undefined;
         if (!input) {
           throw this.invalid();
         }
-        await this.write(() => this.client.setInput(input.name));
+        await this.communicate(() => this.controller.setInput(input.name));
       });
     // Only advertise remote commands defined by the existing soundbar protocol.
     this.television.getCharacteristic(C.RemoteKey)
@@ -174,32 +142,31 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
         if (value !== C.RemoteKey.REWIND && value !== C.RemoteKey.FAST_FORWARD) {
           throw this.invalid();
         }
-        await this.write(() => this.client.key(2, value === C.RemoteKey.REWIND ? 1 : 0));
+        await this.communicate(() => this.controller.seek(value === C.RemoteKey.FAST_FORWARD));
       });
     this.speaker.setCharacteristic(C.VolumeControlType, C.VolumeControlType.ABSOLUTE);
-    this.speaker.getCharacteristic(C.Active).onGet(() => this.communicate(() => this.client.getPower()));
+    this.speaker.getCharacteristic(C.Active).onGet(() => this.communicate(() => this.controller.getPower()));
     this.speaker.getCharacteristic(C.Volume)
-      .onGet(() => this.communicate(() => this.client.getVolume()))
+      .onGet(() => this.communicate(() => this.controller.getVolume()))
       .onSet(async value => {
         if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) {
           throw this.invalid();
         }
-        await this.write(() => this.client.setVolume(value));
+        await this.communicate(() => this.controller.setVolume(value));
       });
     this.speaker.getCharacteristic(C.Mute)
-      .onGet(() => this.communicate(() => this.client.getMute()))
+      .onGet(() => this.communicate(() => this.controller.getMute()))
       .onSet(async value => {
         if (typeof value !== 'boolean') {
           throw this.invalid();
         }
-        await this.write(() => this.client.setMute(value));
+        await this.communicate(() => this.controller.setMute(value));
       });
     this.speaker.getCharacteristic(C.VolumeSelector).onSet(async value => {
       if (value !== C.VolumeSelector.INCREMENT && value !== C.VolumeSelector.DECREMENT) {
         throw this.invalid();
       }
-      await this.write(() => this.client.changeVolume(value === C.VolumeSelector.INCREMENT));
-      void this.refresh();
+      await this.communicate(() => this.controller.changeVolume(value === C.VolumeSelector.INCREMENT));
     });
   }
 
@@ -228,8 +195,9 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
       .setCharacteristic(C.CurrentVisibilityState, hidden)
       .setCharacteristic(C.TargetVisibilityState, hidden);
     service.getCharacteristic(C.ConfiguredName).onSet(async value => {
+      const name = this.validName(value);
       await this.communicate(() => this.preferences.update(undefined, {
-        key: input.name, preference: { name: this.validName(value) },
+        key: input.name, preference: { name },
       }));
     });
     service.getCharacteristic(C.TargetVisibilityState).onSet(async value => {
@@ -245,66 +213,37 @@ export class HomebridgeVizioSoundbar implements IndependentPlatformPlugin {
   }
 
   private resolveInput(name: string): number {
-    for (const [id, input] of this.inputs) {
-      if (input.name.toLowerCase() === name.toLowerCase()) {
-        return id;
-      }
+    const id = inputIdentifier(name);
+    if (!this.inputs.has(id)) {
+      throw new Error('Soundbar selected an input that was not discovered');
     }
-    for (const [id, input] of this.inputs) {
-      if (input.displayName.toLowerCase() === name.toLowerCase()) {
-        return id;
-      }
-    }
-    throw new Error('Soundbar selected an input that was not discovered');
+    return id;
   }
 
-  private async refresh(): Promise<void> {
-    if (this.refreshing || this.stopped || !this.published) {
-      return;
-    }
-    this.refreshing = true;
-    const revision = this.revision;
+  private updateState(update: Readonly<SoundbarUpdate>): void {
     const C = this.hap.Characteristic;
-    try {
-      const results = await Promise.allSettled([
-        this.client.getPower(), this.client.getVolume(), this.client.getMute(), this.client.getInput(),
-      ] as const);
-      // A snapshot started before a HomeKit write must not overwrite its newer state.
-      if (this.stopped || revision !== this.revision) {
-        return;
-      }
-      const [power, volume, mute, input] = results;
-      const hap = this.hap;
-      const failed = () => new hap.HapStatusError(hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-      this.television.getCharacteristic(C.Active).updateValue(power.status === 'fulfilled' ? power.value : failed());
-      this.speaker.getCharacteristic(C.Active).updateValue(power.status === 'fulfilled' ? power.value : failed());
-      this.speaker.getCharacteristic(C.Volume).updateValue(volume.status === 'fulfilled' ? volume.value : failed());
-      this.speaker.getCharacteristic(C.Mute).updateValue(mute.status === 'fulfilled' ? mute.value : failed());
-      let identifier: number | Error = failed();
-      if (input.status === 'fulfilled') {
-        try {
-          identifier = this.resolveInput(input.value);
-        } catch (error) {
-          this.log.debug('%s', message(error));
-        }
-      }
-      this.television.getCharacteristic(C.ActiveIdentifier).updateValue(identifier);
-      for (const result of results) {
-        if (result.status === 'rejected') {
-          this.log.debug('Soundbar refresh failed: %s', message(result.reason));
-        }
-      }
-    } catch (error) {
-      this.log.debug('Could not update soundbar state: %s', message(error));
-    } finally {
-      this.refreshing = false;
+    const hap = this.hap;
+    const value = (state: number | boolean | string | Error) => state instanceof Error
+      ? new hap.HapStatusError(hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE) : state;
+    if (update.power !== undefined) {
+      this.television.getCharacteristic(C.Active).updateValue(value(update.power));
+      this.speaker.getCharacteristic(C.Active).updateValue(value(update.power));
+    }
+    if (update.volume !== undefined) {
+      this.speaker.getCharacteristic(C.Volume).updateValue(value(update.volume));
+    }
+    if (update.mute !== undefined) {
+      this.speaker.getCharacteristic(C.Mute).updateValue(value(update.mute));
+    }
+    if (update.input !== undefined) {
+      this.television.getCharacteristic(C.ActiveIdentifier).updateValue(
+        update.input instanceof Error ? value(update.input) : this.resolveInput(update.input),
+      );
     }
   }
 
   private shutdown(): void {
     this.stopped = true;
-    clearTimeout(this.retryTimer);
-    clearInterval(this.pollTimer);
-    this.client.close();
+    this.controller.stop();
   }
 }

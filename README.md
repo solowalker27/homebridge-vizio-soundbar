@@ -42,7 +42,7 @@ Add one platform entry to your Homebridge configuration:
 | `name` | `Vizio Soundbar` | Accessory name. Keep the configuration name unchanged after pairing; it determines the accessory identity. Rename it in Apple Home instead. |
 | `ip` | Required | IP address or hostname, optionally including a port, such as `192.168.1.50:9000`. Omit the URL scheme. Bracket IPv6 addresses, such as `[fd00::1234]:9000`. |
 | `authToken` | Unset | Existing SmartCast authentication token, if your model requires one. Token acquisition/pairing with Vizio is outside this plugin. |
-| `pollInterval` | `30` | Seconds between background state refreshes: 10–3600, or 0 to disable. Reads requested by HomeKit still query the device directly. |
+| `pollInterval` | `30` | Seconds to wait after each completed background refresh: 10–3600, or 0 to disable. Reads requested by HomeKit still query the device directly; overlapping reads of the same property share one request. |
 | `requestTimeout` | `3000` | Per-request timeout in milliseconds, from 500 to 4000. Hash-based read/write commands have a total deadline of twice this value, including queue time. |
 
 After restarting Homebridge, wait for the log message confirming the soundbar was published. In **Apple Home → Add Accessory → More Options**, select the soundbar and use your Homebridge PIN. External receivers are paired separately from the main Homebridge bridge.
@@ -81,6 +81,14 @@ npm pack --dry-run
 ```
 
 `npm run check` runs ESLint, a strict TypeScript build, and Node's test runner. Tests use a loopback HTTPS server with a committed **test-only** self-signed certificate and private key. They never contact a physical soundbar or publish mDNS advertisements. The harness instantiates Homebridge's real API and HAP services; production code uses public Homebridge types and the injected `api.hap` objects, with no Homebridge runtime dependency of its own.
+
+The implementation has three layers:
+
+- `client.ts` implements the Vizio HTTPS protocol, bounded connections, and serialized hash-based writes.
+- `controller.ts` owns discovery/retry, polling, shared state, and device commands without depending on HomeKit. It coalesces in-flight reads, guards each property against stale responses, bounds read deadlines, and notifies subscribers only when state or availability changes. Relative volume commands refresh volume alone.
+- `platform.ts` translates HomeKit characteristics and preferences into controller operations and maps device state/errors back to HomeKit. Future protocol adapters can share the same controller and polling loop.
+
+Controller tests use an injected device implementation to exercise races, failures, and lifecycle behavior independently of Homebridge. Integration tests retain the real Homebridge API and loopback HTTPS server. Repeated unchanged Home app settings skip disk writes; preference reads return copies so consumers cannot mutate stored settings accidentally.
 
 CI runs the checks on Node 22, 24, and 26. `npm run watch` recompiles on changes; restart your dedicated test Homebridge instance to load the compiled output.
 

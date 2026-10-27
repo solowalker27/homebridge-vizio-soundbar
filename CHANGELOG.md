@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1
+
+- Extract a protocol-independent soundbar controller for discovery, polling, state, commands, and subscribers; keep HomeKit service construction and preferences in the platform adapter.
+- Coalesce concurrent reads of each property, including HomeKit reads overlapping polling; do not cache completed reads.
+- Track writes per property so stale values/errors cannot overwrite newer commands or discard unrelated state updates. Reads during writes wait for acknowledgement and re-read when necessary.
+- Refresh only volume after relative volume commands, including when an earlier poll is pending.
+- Schedule the next poll after the previous one finishes, bound shared read deadlines, and cancel pending reads on shutdown.
+- Notify adapters only when values or availability change; isolate subscriber failures from device operations.
+- Bound the HTTPS connection pool and avoid rewriting unchanged preferences; return preference snapshots rather than mutable stored objects.
+- Preserve value-validation errors when renaming inputs instead of reporting them as device communication failures.
+- Add controller unit tests and HomeKit integration regressions for races, read coalescing, retries, shutdown, and persistence.
+
 ## 0.1.0
 
 ### Compatibility

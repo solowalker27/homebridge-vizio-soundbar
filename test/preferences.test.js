@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PreferenceStore } from '../dist/preferences.js';
@@ -48,4 +48,27 @@ test('failed saves leave current settings intact and do not poison the write que
   await rm(path, { recursive: true });
   await store.update('Saved');
   assert.equal(store.name, 'Saved');
+});
+
+
+test('unchanged settings avoid replacing the file, and preference snapshots cannot mutate stored state', async t => {
+  const path = await pathFor(t);
+  const store = new PreferenceStore(path);
+  await store.update('Room', { key: 'HDMI', preference: { name: 'TV', hidden: false } });
+  const before = await stat(path);
+  await store.update('Room', { key: 'HDMI', preference: { name: 'TV', hidden: false } });
+  assert.equal((await stat(path)).ino, before.ino);
+  const copy = store.input('HDMI');
+  copy.name = 'Not Saved';
+  assert.equal(store.input('HDMI').name, 'TV');
+});
+
+test('protocol names matching object prototype keys persist as ordinary input settings', async t => {
+  const path = await pathFor(t);
+  const store = new PreferenceStore(path);
+  await store.update(undefined, { key: '__proto__', preference: { name: 'Input' } });
+  const restored = new PreferenceStore(path);
+  await restored.load();
+  assert.equal(restored.input('__proto__').name, 'Input');
+  assert.deepEqual(restored.input('toString'), {});
 });

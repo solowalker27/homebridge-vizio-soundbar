@@ -1,6 +1,6 @@
 {
   "name": "@solowalker27/homebridge-vizio-soundbar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "displayName": "Homebridge Vizio Soundbar",
   "description": "Local HomeKit control for Vizio SmartCast soundbars",
   "license": "Apache-2.0",

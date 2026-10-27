@@ -14,7 +14,7 @@ function object(value: unknown): value is JsonObject {
 }
 
 export class SmartCastClient {
-  private readonly agent = new Agent({ keepAlive: true, rejectUnauthorized: false });
+  private readonly agent = new Agent({ keepAlive: true, maxSockets: 5, maxFreeSockets: 5, rejectUnauthorized: false });
   private readonly pending = new Set<ClientRequest>();
   private closed = false;
   private writes: Promise<unknown> = Promise.resolve();

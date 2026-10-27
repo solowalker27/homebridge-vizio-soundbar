@@ -40,7 +40,9 @@ export class PreferenceStore {
   }
 
   get name(): string | undefined { return this.state.name; }
-  input(name: string): InputPreference { return Object.hasOwn(this.state.inputs, name) ? this.state.inputs[name]! : {}; }
+  input(name: string): InputPreference {
+    return Object.hasOwn(this.state.inputs, name) ? { ...this.state.inputs[name] } : {};
+  }
 
   update(name: string | undefined, input?: { key: string; preference: InputPreference }): Promise<void> {
     const result = this.writes.then(async () => {
@@ -49,13 +51,15 @@ export class PreferenceStore {
         next.name = name;
       }
       if (input) {
-        Object.defineProperty(next.inputs, input.key, {
-          value: { ...this.input(input.key), ...input.preference }, enumerable: true, configurable: true, writable: true,
-        });
+        next.inputs = { ...next.inputs, [input.key]: { ...this.input(input.key), ...input.preference } };
+      }
+      const serialized = JSON.stringify(next);
+      if (serialized === JSON.stringify(this.state)) {
+        return;
       }
       await mkdir(dirname(this.path), { recursive: true });
       const temporary = `${this.path}.tmp`;
-      await writeFile(temporary, JSON.stringify(next), { mode: 0o600 });
+      await writeFile(temporary, serialized, { mode: 0o600 });
       await rename(temporary, this.path);
       this.state = next;
     });

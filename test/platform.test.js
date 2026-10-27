@@ -25,7 +25,8 @@ async function setup(t, handler, options = {}) {
 async function launch(context) {
   context.api.emit('didFinishLaunching');
   await context.launched;
-  await until(() => !context.platform.refreshing);
+  await context.platform.controller.refresh();
+  await delay(0);
   const C = context.api.hap.Characteristic;
   const S = context.api.hap.Service;
   return {
@@ -108,10 +109,10 @@ test('failed reads/writes return communication errors and do not report successf
   await assert.rejects(tv.getCharacteristic(C.Active).handleSetRequest(0), error => error === status);
   assert.equal(context.state.power, 1);
   assert.equal(speaker.getCharacteristic(C.Active).value, 1);
-  await context.platform.refresh();
+  await context.platform.controller.refresh();
   assert.equal(tv.getCharacteristic(C.Active).statusCode, status);
   failing = false;
-  await context.platform.refresh();
+  await context.platform.controller.refresh();
   assert.equal(tv.getCharacteristic(C.Active).statusCode, 0);
 });
 
@@ -152,7 +153,7 @@ test('Home app names and visibility survive restart without changing protocol in
   assert.equal(context.state.input, 'HDMI');
 });
 
-test('refresh reflects physical remote changes and does not overwrite a newer HomeKit write', async t => {
+test('refresh preserves newer commands while still applying unrelated property updates', async t => {
   let blocked = false;
   let release;
   let readStarted;
@@ -170,12 +171,12 @@ test('refresh reflects physical remote changes and does not overwrite a newer Ho
   context.state.volume = 33;
   context.state.muted = true;
   context.state.input = 'Bluetooth';
-  await context.platform.refresh();
+  await context.platform.controller.refresh();
   assert.equal(speaker.getCharacteristic(C.Volume).value, 33);
   assert.equal(speaker.getCharacteristic(C.Mute).value, true);
   assert.equal(tv.getCharacteristic(C.ActiveIdentifier).value, inputIdentifier('Bluetooth'));
   blocked = true;
-  const pending = context.platform.refresh();
+  const pending = context.platform.controller.refresh();
   await started;
   // Power uses a key command, so it can finish while the snapshot's volume read is stalled.
   await tv.getCharacteristic(C.Active).handleSetRequest(0);
@@ -183,7 +184,7 @@ test('refresh reflects physical remote changes and does not overwrite a newer Ho
   await pending;
   assert.equal(tv.getCharacteristic(C.Active).value, 0);
   assert.equal(speaker.getCharacteristic(C.Active).value, 0);
-  assert.equal(speaker.getCharacteristic(C.Volume).value, 33);
+  assert.equal(speaker.getCharacteristic(C.Volume).value, 5);
 });
 
 test('discovery failure retries without publishing a partially configured accessory', async t => {
@@ -195,12 +196,14 @@ test('discovery failure retries without publishing a partially configured access
     }
   });
   context.api.emit('didFinishLaunching');
-  await until(() => context.platform.retryTimer !== undefined);
+  await until(() => context.platform.controller.retryTimer !== undefined);
   assert.equal(context.platform.published, false);
   failing = false;
   // Trigger the scheduled retry directly without waiting 30 seconds in the test suite.
-  clearTimeout(context.platform.retryTimer);
-  await context.platform.discover();
+  const retry = context.platform.controller.retryTimer._onTimeout;
+  clearTimeout(context.platform.controller.retryTimer);
+  retry();
+  await context.launched;
   assert.equal(context.platform.published, true);
   assert.equal(context.platform.inputs.size, 3);
 });
@@ -219,8 +222,8 @@ test('shutdown stops polling, aborts discovery, and prevents late publication', 
   context.api.emit('shutdown');
   await delay(20);
   assert.equal(context.platform.published, false);
-  assert.equal(context.platform.retryTimer, undefined);
-  assert.equal(context.platform.pollTimer, undefined);
+  assert.equal(context.platform.controller.retryTimer, undefined);
+  assert.equal(context.platform.controller.pollTimer, undefined);
 });
 
 test('canonical input names take priority over another input display alias', async t => {
@@ -266,7 +269,58 @@ test('preserves legacy UUID for a configuration with no name and clears an activ
   const context = await setup(t, undefined, { name: undefined, pollInterval: 10 });
   await launch(context);
   assert.equal(context.platform.accessory.UUID, context.api.hap.uuid.generate('homebridge:vizio-soundbar:accessory:undefined'));
-  assert.ok(context.platform.pollTimer);
+  assert.ok(context.platform.controller.pollTimer);
   context.api.emit('shutdown');
-  assert.equal(context.platform.pollTimer._destroyed, true);
+  assert.equal(context.platform.controller.pollTimer._destroyed, true);
+});
+
+test('simultaneous HomeKit power reads share a single HTTP request and update both services', async t => {
+  let slow = false;
+  const context = await setup(t, async req => {
+    if (slow && req.path === '/state/device/power_mode') {
+      await delay(15);
+    }
+  });
+  const { C, tv, speaker } = await launch(context);
+  slow = true;
+  const before = context.requests.filter(req => req.path === '/state/device/power_mode').length;
+  context.state.power = 0;
+  assert.deepEqual(await Promise.all([
+    tv.getCharacteristic(C.Active).handleGetRequest(), speaker.getCharacteristic(C.Active).handleGetRequest(),
+  ]), [0, 0]);
+  const after = context.requests.filter(req => req.path === '/state/device/power_mode').length;
+  assert.equal(after - before, 1);
+  assert.equal(tv.getCharacteristic(C.Active).value, 0);
+  assert.equal(speaker.getCharacteristic(C.Active).value, 0);
+});
+
+test('a volume GET started before a SET cannot restore the old HomeKit volume', async t => {
+  let blockNext = false;
+  let release, began;
+  const blocked = new Promise(resolve => { began = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const context = await setup(t, async (req, res) => {
+    if (blockNext && req.method === 'GET' && req.path === `${AUDIO}/volume`) {
+      blockNext = false;
+      began();
+      await gate;
+      res.end(JSON.stringify(success([{ VALUE: 5, HASHVAL: 1 }])));
+      return true;
+    }
+  });
+  const { C, speaker } = await launch(context);
+  blockNext = true;
+  const reading = speaker.getCharacteristic(C.Volume).handleGetRequest();
+  await blocked;
+  await speaker.getCharacteristic(C.Volume).handleSetRequest(60);
+  release();
+  assert.equal(await reading, 60);
+  assert.equal(speaker.getCharacteristic(C.Volume).value, 60);
+});
+
+test('invalid input names report a value error instead of a communication failure', async t => {
+  const context = await setup(t);
+  const { C, inputs } = await launch(context);
+  await assert.rejects(inputs[0].getCharacteristic(C.ConfiguredName).handleSetRequest('   '),
+    error => error === context.api.hap.HAPStatus.INVALID_VALUE_IN_REQUEST);
 });
